@@ -6,9 +6,9 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QPlainTextEdit,
-    QFrame, QSizePolicy, QScrollArea
+    QFrame, QSizePolicy, QScrollArea, QLineEdit
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
 
@@ -25,11 +25,93 @@ EXAMPLE_PROMPTS = [
 ]
 
 
+# ── Minimal chat bubble ───────────────────────────────────────────────────────
+class _ChatBubble(QFrame):
+    def __init__(self, text: str, is_user: bool, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        bubble.setMaximumWidth(320)
+
+        if is_user:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#1e2035;color:#c0c4ff;"
+                "border-radius:10px;border-bottom-right-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("You")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#7c83ff;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-left:6px;}"
+            )
+            layout.addStretch()
+            layout.addWidget(bubble)
+            layout.addWidget(av)
+        else:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#162820;color:#a0d4b4;"
+                "border-radius:10px;border-bottom-left-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("AI")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+            )
+            layout.addWidget(av)
+            layout.addWidget(bubble)
+            layout.addStretch()
+
+
+# ── Typing indicator ─────────────────────────────────────────────────────────
+class _TypingIndicator(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        av = QLabel("AI")
+        av.setFixedWidth(32)
+        av.setAlignment(Qt.AlignCenter)
+        av.setStyleSheet(
+            "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+            "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+        )
+        self.dots = QLabel("Thinking .")
+        self.dots.setStyleSheet(
+            "QLabel{background-color:#162820;color:#4caf81;"
+            "border-radius:10px;padding:8px 12px;font-size:12px;}"
+        )
+        layout.addWidget(av)
+        layout.addWidget(self.dots)
+        layout.addStretch()
+        self._state = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):  self._timer.start(400)
+    def stop(self):   self._timer.stop()
+
+    def _tick(self):
+        self.dots.setText(["Thinking .", "Thinking ..", "Thinking ..."][self._state % 3])
+        self._state += 1
+
+
 class MacroPanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window  = main_window
         self.current_file = None
+        self._chat_history  = []
+        self._chat_bubbles  = []
         self._build_ui()
 
     # ── Build UI ────────────────────────────────────────────

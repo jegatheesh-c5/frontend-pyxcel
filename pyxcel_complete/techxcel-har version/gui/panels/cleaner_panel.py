@@ -122,17 +122,33 @@ class CleanerPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Left side — scrollable cleaner content (stretch 3)
-        root.addWidget(self._build_left_panel(), stretch=3)
+        # Left side — scrollable cleaner content
+        root.addWidget(self._build_left_panel(), stretch=1)
 
-        # Vertical divider
-        div = QFrame()
-        div.setFrameShape(QFrame.VLine)
-        div.setStyleSheet("background-color:#2a2d3e; max-width:1px; border:none;")
-        root.addWidget(div)
+        # Right side — collapsible chat button
+        self.chat_toggle_btn = QPushButton("💬")
+        self.chat_toggle_btn.setFixedSize(50, 50)
+        self.chat_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.chat_toggle_btn.clicked.connect(self._toggle_chat)
+        self.chat_toggle_btn.setStyleSheet(
+            "QPushButton{background-color:#7c83ff;color:white;border:none;"
+            "border-radius:8px;font-size:20px;font-weight:bold;}"
+            "QPushButton:hover{background-color:#6b72ff;}"
+        )
 
-        # Right side — embedded chat (stretch 2)
-        root.addWidget(self._build_right_chat(), stretch=2)
+        # Chat panel container (initially hidden)
+        self.chat_panel = self._build_right_chat()
+        self.chat_panel.hide()
+
+        # Right side container with button and chat
+        right_container = QWidget()
+        right_layout = QHBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        right_layout.addWidget(self.chat_panel, stretch=1)
+        right_layout.addWidget(self.chat_toggle_btn)
+
+        root.addWidget(right_container)
 
     # ── LEFT: scrollable cleaner content ─────────────────────
     def _build_left_panel(self):
@@ -606,6 +622,15 @@ class CleanerPanel(QWidget):
     def _on_chat_error(self, error):
         self._hide_typing()
         self._add_chat_bubble(f"Error: {error}", False)
+
+    def _toggle_chat(self):
+        if self.chat_panel.isVisible():
+            self.chat_panel.hide()
+            self.chat_toggle_btn.setText("💬")
+        else:
+            self.chat_panel.show()
+            self.chat_toggle_btn.setText("❌")
+            self.chat_input.setFocus()
 
     def _divider(self):
         line = QFrame()
