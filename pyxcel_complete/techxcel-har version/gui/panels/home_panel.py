@@ -1,20 +1,21 @@
 """
 PyXcel — Home Panel
-Welcome screen with file upload, quick actions, and system status.
+Welcome screen with file upload, quick actions, system status,
+and an embedded live chat panel on the right side.
 """
 import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFileDialog, QFrame,
-    QSizePolicy, QScrollArea
+    QSizePolicy, QScrollArea, QLineEdit
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QFont, QDragEnterEvent, QDropEvent
 
 
-# ── Background thread for Ollama checks (never blocks the UI) ────────────────
+# ── Background thread for Ollama checks ──────────────────────────────────────
 class _StatusChecker(QThread):
-    done = Signal(bool, bool)   # (ollama_running, model_available)
+    done = Signal(bool, bool)
 
     def run(self):
         from core.ollama_client import is_ollama_running, is_model_available
@@ -23,71 +24,165 @@ class _StatusChecker(QThread):
         self.done.emit(running, model_ok)
 
 
+# ── Minimal chat bubble ───────────────────────────────────────────────────────
+class _ChatBubble(QFrame):
+    def __init__(self, text: str, is_user: bool, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        bubble.setMaximumWidth(320)
+
+        if is_user:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#1e2035;color:#c0c4ff;"
+                "border-radius:10px;border-bottom-right-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("You")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#7c83ff;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-left:6px;}"
+            )
+            layout.addStretch()
+            layout.addWidget(bubble)
+            layout.addWidget(av)
+        else:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#162820;color:#a0d4b4;"
+                "border-radius:10px;border-bottom-left-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("AI")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+            )
+            layout.addWidget(av)
+            layout.addWidget(bubble)
+            layout.addStretch()
+
+
+# ── Typing indicator ─────────────────────────────────────────────────────────
+class _TypingIndicator(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        av = QLabel("AI")
+        av.setFixedWidth(32)
+        av.setAlignment(Qt.AlignCenter)
+        av.setStyleSheet(
+            "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+            "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+        )
+        self.dots = QLabel("Thinking .")
+        self.dots.setStyleSheet(
+            "QLabel{background-color:#162820;color:#4caf81;"
+            "border-radius:10px;padding:8px 12px;font-size:12px;}"
+        )
+        layout.addWidget(av)
+        layout.addWidget(self.dots)
+        layout.addStretch()
+        self._state = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):  self._timer.start(400)
+    def stop(self):   self._timer.stop()
+
+    def _tick(self):
+        self.dots.setText(["Thinking .", "Thinking ..", "Thinking ..."][self._state % 3])
+        self._state += 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 class HomePanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
-        self.main_window = main_window
+        self.main_window  = main_window
+        self.current_file = None
+        self._chat_history  = []
+        self._chat_bubbles  = []
         self.setAcceptDrops(True)
         self._build_ui()
         self._start_status_check()
 
-    # ── Build UI ─────────────────────────────────────────────
+    # ── Master layout: left content + right chat ──────────────
     def _build_ui(self):
-        # Outer layout — zero margin, holds only the scroll area
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # Scroll area
+        # Left side — scrollable home content (stretch 3)
+        root.addWidget(self._build_left_panel(), stretch=3)
+
+        # Vertical divider
+        div = QFrame()
+        div.setFrameShape(QFrame.VLine)
+        div.setStyleSheet("background-color:#2a2d3e; max-width:1px; border:none;")
+        root.addWidget(div)
+
+        # Right side — embedded chat (stretch 2)
+        root.addWidget(self._build_right_chat(), stretch=2)
+
+    # ── LEFT: scrollable home content ────────────────────────
+    def _build_left_panel(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
 
-        # Inner content widget
         content = QWidget()
         content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(40, 40, 40, 40)
-        layout.setSpacing(24)
+        layout.setContentsMargins(40, 40, 30, 40)
+        layout.setSpacing(22)
 
-        # ── Header ──
+        # Header
         badge = QLabel("AI-POWERED SPREADSHEET SYSTEM")
         badge.setFixedHeight(24)
         badge.setAlignment(Qt.AlignLeft)
-        badge.setStyleSheet("""
-            background-color: #1e2035; color: #7c83ff;
-            border-radius: 12px; padding: 3px 12px;
-            font-size: 10px; font-weight: bold; letter-spacing: 1.5px;
-        """)
+        badge.setStyleSheet(
+            "background-color:#1e2035;color:#7c83ff;border-radius:12px;"
+            "padding:3px 12px;font-size:10px;font-weight:bold;letter-spacing:1.5px;"
+        )
 
         title = QLabel("Welcome to PyXcel")
-        font = QFont(); font.setPointSize(24); font.setBold(True)
+        font = QFont(); font.setPointSize(22); font.setBold(True)
         title.setFont(font)
 
         subtitle = QLabel(
             "Replace macros with natural language  ·  "
             "Generate formulas  ·  Clean data  ·  Chat with your spreadsheet"
         )
-        subtitle.setStyleSheet("color: #555; font-size: 13px; letter-spacing: 0.2px;")
+        subtitle.setStyleSheet("color:#555;font-size:12px;letter-spacing:0.2px;")
         subtitle.setWordWrap(True)
 
         layout.addWidget(badge)
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        # ── Drop Zone ──
+        # Drop zone
         self.drop_zone = self._build_drop_zone()
         layout.addWidget(self.drop_zone)
 
-        # ── Quick Actions ──
+        # Quick actions
         layout.addWidget(self._section_label("QUICK ACTIONS"))
         layout.addWidget(self._build_quick_actions())
 
-        # ── System Status ──
+        # System status
         layout.addWidget(self._section_label("SYSTEM STATUS"))
         self.status_grid = self._build_status_cards()
         layout.addWidget(self.status_grid)
@@ -95,13 +190,166 @@ class HomePanel(QWidget):
         layout.addSpacing(24)
 
         scroll.setWidget(content)
-        outer.addWidget(scroll)
+        return scroll
 
-    # ── Drop Zone ────────────────────────────────────────────
+    # ── RIGHT: embedded chat panel ────────────────────────────
+    def _build_right_chat(self):
+        panel = QWidget()
+        panel.setStyleSheet("background-color:#0f1117;")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 30, 24, 20)
+        layout.setSpacing(12)
+
+        # Header
+        chat_title = QLabel("💬  Chat with Data")
+        font = QFont(); font.setPointSize(14); font.setBold(True)
+        chat_title.setFont(font)
+
+        chat_sub = QLabel("Ask questions about your spreadsheet")
+        chat_sub.setStyleSheet("color:#555;font-size:11px;")
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(60)
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_chat)
+        clear_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:#555;border:1px solid #2a2d3e;"
+            "border-radius:6px;padding:4px 8px;font-size:11px;}"
+            "QPushButton:hover{color:#f44336;border-color:#5a2020;background:#3d1a1a;}"
+        )
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(chat_title)
+        title_row.addStretch()
+        title_row.addWidget(clear_btn)
+
+        layout.addLayout(title_row)
+        layout.addWidget(chat_sub)
+
+        # File status bar
+        self.chat_file_status = QLabel("⚠️  Load a file to start chatting")
+        self.chat_file_status.setStyleSheet(
+            "color:#ff9800;font-size:11px;background:#1e1a0e;"
+            "border-radius:6px;padding:6px 10px;"
+        )
+        self.chat_file_status.setWordWrap(True)
+        layout.addWidget(self.chat_file_status)
+
+        # Divider
+        div = QFrame(); div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("background:#2a2d3e;max-height:1px;border:none;")
+        layout.addWidget(div)
+
+        # Chat scroll area
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_scroll.setFrameShape(QFrame.NoFrame)
+        self.chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chat_scroll.setStyleSheet(
+            "QScrollArea{background-color:#13151f;border:1px solid #2a2d3e;"
+            "border-radius:10px;}"
+        )
+
+        self.chat_container = QWidget()
+        self.chat_container.setStyleSheet("background-color:#13151f;")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setContentsMargins(12, 12, 12, 12)
+        self.chat_layout.setSpacing(6)
+        self.chat_layout.addStretch()
+
+        self.chat_scroll.setWidget(self.chat_container)
+        layout.addWidget(self.chat_scroll, stretch=1)
+
+        # Typing indicator
+        self.typing_indicator = _TypingIndicator()
+        self.typing_indicator.hide()
+        layout.addWidget(self.typing_indicator)
+
+        # Starter chips
+        self.starters_widget = self._build_starter_chips()
+        layout.addWidget(self.starters_widget)
+
+        # Input bar
+        input_frame = QFrame()
+        input_frame.setStyleSheet(
+            "QFrame{background-color:#1a1d2e;border:1px solid #2a2d3e;border-radius:10px;}"
+        )
+        input_frame.setFixedHeight(52)
+        input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(12, 8, 8, 8)
+        input_layout.setSpacing(8)
+
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("Ask about your data...")
+        self.chat_input.setStyleSheet(
+            "QLineEdit{background:transparent;border:none;color:#e0e0e0;font-size:12px;}"
+        )
+        self.chat_input.returnPressed.connect(self._send_chat)
+
+        self.send_btn = QPushButton("➤")
+        self.send_btn.setFixedSize(34, 34)
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.clicked.connect(self._send_chat)
+        self.send_btn.setStyleSheet(
+            "QPushButton{background-color:#7c83ff;color:white;border:none;"
+            "border-radius:8px;font-size:14px;font-weight:bold;}"
+            "QPushButton:hover{background-color:#6b72ff;}"
+            "QPushButton:disabled{background-color:#2a2d3e;color:#555;}"
+        )
+
+        input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(self.send_btn)
+        layout.addWidget(input_frame)
+
+        # Message counter
+        self.msg_counter = QLabel("0 messages")
+        self.msg_counter.setAlignment(Qt.AlignCenter)
+        self.msg_counter.setStyleSheet("color:#2a2d3e;font-size:10px;")
+        layout.addWidget(self.msg_counter)
+
+        return panel
+
+    def _build_starter_chips(self):
+        widget = QWidget()
+        widget.setStyleSheet("background:transparent;")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        label = QLabel("💡  Try asking:")
+        label.setStyleSheet("color:#444;font-size:10px;")
+        layout.addWidget(label)
+
+        starters = [
+            "Summarise this spreadsheet",
+            "What columns have missing values?",
+            "Which row has the highest value?",
+            "What trends do you see?",
+        ]
+
+        row1 = QHBoxLayout(); row1.setSpacing(6)
+        row2 = QHBoxLayout(); row2.setSpacing(6)
+
+        for i, q in enumerate(starters):
+            btn = QPushButton(q)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, t=q: self._use_starter(t))
+            btn.setStyleSheet(
+                "QPushButton{background-color:#1a1d2e;color:#555;border:1px solid #2a2d3e;"
+                "border-radius:14px;padding:4px 10px;font-size:10px;}"
+                "QPushButton:hover{background-color:#1e2035;color:#c0c4ff;border-color:#7c83ff;}"
+            )
+            (row1 if i < 2 else row2).addWidget(btn)
+
+        layout.addLayout(row1)
+        layout.addLayout(row2)
+        return widget
+
+    # ── Drop Zone ─────────────────────────────────────────────
     def _build_drop_zone(self):
         zone = QFrame()
         zone.setObjectName("drop_zone")
-        zone.setFixedHeight(190)
+        zone.setFixedHeight(175)
         zone.setCursor(Qt.PointingHandCursor)
         zone.setStyleSheet("""
             QFrame#drop_zone {
@@ -117,27 +365,23 @@ class HomePanel(QWidget):
 
         layout = QVBoxLayout(zone)
         layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         icon = QLabel("📂")
         icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet("font-size: 36px; background: transparent;")
+        icon.setStyleSheet("font-size: 32px; background: transparent;")
 
         self.drop_label = QLabel("Drop your Excel file here")
         self.drop_label.setAlignment(Qt.AlignCenter)
-        self.drop_label.setStyleSheet(
-            "color: #555; font-size: 15px; background: transparent;"
-        )
+        self.drop_label.setStyleSheet("color:#555;font-size:14px;background:transparent;")
 
         hint = QLabel("or click to browse  ·  supports .xlsx  .xls")
         hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet(
-            "color: #3a3d5e; font-size: 12px; background: transparent;"
-        )
+        hint.setStyleSheet("color:#3a3d5e;font-size:11px;background:transparent;")
 
         browse_btn = QPushButton("Browse Files")
-        browse_btn.setFixedWidth(160)
-        browse_btn.setFixedHeight(40)
+        browse_btn.setFixedWidth(150)
+        browse_btn.setFixedHeight(36)
         browse_btn.setCursor(Qt.PointingHandCursor)
         browse_btn.clicked.connect(self._browse_file)
 
@@ -149,31 +393,31 @@ class HomePanel(QWidget):
         zone.mousePressEvent = lambda e: self._browse_file()
         return zone
 
-    # ── Quick Actions ────────────────────────────────────────
+    # ── Quick Actions ─────────────────────────────────────────
     def _build_quick_actions(self):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         actions = [
-            ("⚙️",  "Macro Replacement", "Replace VBA macros with natural language",    2),
-            ("🧮",  "Formula Generator", "Generate Excel formulas from plain English",   3),
-            ("🧹",  "Data Cleaner",      "Clean & transform data with AI instructions",  4),
-            ("💬",  "Chat with Data",    "Ask questions about your spreadsheet",         5),
-            ("📈",  "KPI Cards",         "Auto-detect business KPIs from any sheet",     6),
+            ("⚙️", "Macro\nReplacement", 2),
+            ("🧮", "Formula\nGenerator",  3),
+            ("🧹", "Data\nCleaner",       4),
+            ("💬", "Chat\nwith Data",     5),
+            ("📈", "KPI\nCards",          6),
         ]
 
-        for icon, title, desc, panel_index in actions:
-            layout.addWidget(self._action_card(icon, title, desc, panel_index), stretch=1)
+        for icon, title, panel_index in actions:
+            layout.addWidget(self._action_card(icon, title, panel_index), stretch=1)
 
         return widget
 
-    def _action_card(self, icon, title, desc, panel_index):
+    def _action_card(self, icon, title, panel_index):
         card = QFrame()
         card.setObjectName("card")
         card.setCursor(Qt.PointingHandCursor)
-        card.setMinimumHeight(140)
+        card.setMinimumHeight(90)
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         card.setStyleSheet("""
             QFrame#card {
@@ -188,40 +432,34 @@ class HomePanel(QWidget):
         """)
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignCenter)
 
         icon_lbl = QLabel(icon)
-        icon_lbl.setStyleSheet("font-size: 24px; background: transparent; border: none;")
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet("font-size:22px;background:transparent;border:none;")
 
         title_lbl = QLabel(title)
+        title_lbl.setAlignment(Qt.AlignCenter)
         title_lbl.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #e0e0e0; "
-            "background: transparent; border: none;"
+            "font-size:11px;font-weight:bold;color:#e0e0e0;"
+            "background:transparent;border:none;"
         )
         title_lbl.setWordWrap(True)
 
-        desc_lbl = QLabel(desc)
-        desc_lbl.setStyleSheet(
-            "font-size: 11px; color: #555; background: transparent; border: none; "
-            "line-height: 1.4;"
-        )
-        desc_lbl.setWordWrap(True)
-
         layout.addWidget(icon_lbl)
         layout.addWidget(title_lbl)
-        layout.addWidget(desc_lbl)
-        layout.addStretch()
 
         card.mousePressEvent = lambda e, i=panel_index: self.main_window.switch_panel(i)
         return card
 
-    # ── System Status Cards ──────────────────────────────────
+    # ── Status Cards ──────────────────────────────────────────
     def _build_status_cards(self):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         self.ollama_card  = self._status_card("Ollama",       "Checking...", "⬤", "#555")
         self.model_card   = self._status_card("LLaMA Model",  "Checking...", "⬤", "#555")
@@ -237,47 +475,40 @@ class HomePanel(QWidget):
     def _status_card(self, title, value, icon, value_color):
         frame = QFrame()
         frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        frame.setMinimumWidth(150)
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #1a1d2e;
-                border: 1px solid #2a2d3e;
-                border-radius: 12px;
-            }
-        """)
+        frame.setMinimumWidth(100)
+        frame.setStyleSheet(
+            "QFrame{background-color:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;}"
+        )
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
 
-        # Icon + title row
         title_row = QHBoxLayout()
-        title_row.setSpacing(6)
+        title_row.setSpacing(5)
 
         icon_lbl = QLabel(icon)
-        icon_lbl.setStyleSheet("font-size: 12px; color: #555; background: transparent;")
-        icon_lbl.setFixedWidth(18)
+        icon_lbl.setStyleSheet("font-size:11px;color:#555;background:transparent;")
+        icon_lbl.setFixedWidth(16)
 
         title_lbl = QLabel(title)
         title_lbl.setStyleSheet(
-            "font-size: 11px; color: #888; background: transparent; "
-            "letter-spacing: 0.4px; font-weight: bold;"
+            "font-size:10px;color:#888;background:transparent;"
+            "letter-spacing:0.4px;font-weight:bold;"
         )
 
         title_row.addWidget(icon_lbl)
         title_row.addWidget(title_lbl)
         title_row.addStretch()
 
-        # Divider line
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
-        divider.setStyleSheet("background-color: #2a2d3e; max-height: 1px; border: none;")
+        divider.setStyleSheet("background-color:#2a2d3e;max-height:1px;border:none;")
 
-        # Value label — large and clearly visible
         value_lbl = QLabel(value)
         value_lbl.setStyleSheet(
-            f"font-size: 15px; font-weight: bold; "
-            f"color: {value_color}; background: transparent; letter-spacing: 0.3px;"
+            f"font-size:14px;font-weight:bold;color:{value_color};"
+            f"background:transparent;letter-spacing:0.3px;"
         )
         value_lbl.setWordWrap(True)
 
@@ -287,7 +518,93 @@ class HomePanel(QWidget):
 
         return {"frame": frame, "value": value_lbl}
 
-    # ── Status Check (background thread, never blocks UI) ────
+    # ── Chat logic ────────────────────────────────────────────
+    def _send_chat(self):
+        if not self.current_file:
+            self._add_system_msg("⚠️  Please load an Excel file first.")
+            return
+        msg = self.chat_input.text().strip()
+        if not msg:
+            return
+
+        self.starters_widget.hide()
+        self._add_bubble(msg, is_user=True)
+        self.chat_input.clear()
+        self.send_btn.setEnabled(False)
+        self.chat_input.setEnabled(False)
+        self.typing_indicator.show()
+        self.typing_indicator.start()
+
+        from gui.workers.agent_worker import ChatWorker
+        self.worker = ChatWorker(self.current_file, msg, self._chat_history.copy())
+        self.worker.result.connect(self._on_chat_result)
+        self.worker.error.connect(self._on_chat_error)
+        self.worker.start()
+
+    def _on_chat_result(self, data):
+        self.typing_indicator.stop()
+        self.typing_indicator.hide()
+        self.send_btn.setEnabled(True)
+        self.chat_input.setEnabled(True)
+        self.chat_input.setFocus()
+
+        if data["status"] == "success":
+            response = data.get("response", "")
+            message  = data.get("message", "")
+            self._add_bubble(response, is_user=False)
+            self._chat_history.append({"role": "user",      "content": message})
+            self._chat_history.append({"role": "assistant",  "content": response})
+            if len(self._chat_history) > 20:
+                self._chat_history = self._chat_history[-20:]
+            self.msg_counter.setText(f"{len(self._chat_history)} messages")
+        else:
+            self._add_system_msg("❌  Error getting response from LLaMA.")
+
+    def _on_chat_error(self, msg):
+        self.typing_indicator.stop()
+        self.typing_indicator.hide()
+        self.send_btn.setEnabled(True)
+        self.chat_input.setEnabled(True)
+        self._add_system_msg(f"❌  {msg}")
+
+    def _add_bubble(self, text: str, is_user: bool):
+        bubble = _ChatBubble(text, is_user)
+        idx = self.chat_layout.count() - 1
+        self.chat_layout.insertWidget(idx, bubble)
+        self._chat_bubbles.append(bubble)
+        QTimer.singleShot(50, lambda: self.chat_scroll.verticalScrollBar().setValue(
+            self.chat_scroll.verticalScrollBar().maximum()
+        ))
+
+    def _add_system_msg(self, text: str):
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            "QLabel{color:#555;font-size:11px;background:#1a1d2e;"
+            "border:1px solid #2a2d3e;border-radius:8px;padding:8px 12px;margin:2px 20px;}"
+        )
+        idx = self.chat_layout.count() - 1
+        self.chat_layout.insertWidget(idx, lbl)
+
+    def _use_starter(self, text: str):
+        self.chat_input.setText(text)
+        self.chat_input.setFocus()
+
+    def _clear_chat(self):
+        for b in self._chat_bubbles:
+            self.chat_layout.removeWidget(b)
+            b.deleteLater()
+        self._chat_bubbles.clear()
+        self._chat_history.clear()
+        while self.chat_layout.count() > 1:
+            item = self.chat_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.msg_counter.setText("0 messages")
+        self.starters_widget.show()
+
+    # ── Status checker ────────────────────────────────────────
     def _start_status_check(self):
         self._run_status_check()
         self.timer = QTimer(self)
@@ -301,35 +618,26 @@ class HomePanel(QWidget):
         self._update_file_card()
 
     def _on_status_result(self, ollama_ok: bool, model_ok: bool):
-        if ollama_ok:
-            self._set_card(self.ollama_card, "Running ✓", "#4caf81")
-        else:
-            self._set_card(self.ollama_card, "Offline ✗", "#f44336")
-
-        if model_ok:
-            self._set_card(self.model_card, "Ready ✓", "#4caf81")
-        else:
-            self._set_card(self.model_card, "Not Pulled ✗", "#f44336")
+        self._set_card(self.ollama_card, "Running ✓" if ollama_ok else "Offline ✗",
+                       "#4caf81" if ollama_ok else "#f44336")
+        self._set_card(self.model_card,  "Ready ✓"   if model_ok  else "Not Pulled ✗",
+                       "#4caf81" if model_ok  else "#f44336")
 
     def _update_file_card(self):
         if self.main_window.current_file:
             name = os.path.basename(self.main_window.current_file)
-            self._set_card(self.file_card, name[:24], "#7c83ff")
+            self._set_card(self.file_card, name[:20], "#7c83ff")
         else:
             self._set_card(self.file_card, "None", "#555")
 
     def _set_card(self, card, text, color):
         card["value"].setText(text)
         card["value"].setStyleSheet(
-            f"font-size: 15px; font-weight: bold; "
-            f"color: {color}; background: transparent; letter-spacing: 0.3px;"
+            f"font-size:14px;font-weight:bold;color:{color};"
+            f"background:transparent;letter-spacing:0.3px;"
         )
 
-    # Keep legacy alias
-    def _check_status(self):
-        self._run_status_check()
-
-    # ── File Handling ────────────────────────────────────────
+    # ── File handling ─────────────────────────────────────────
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Excel File", "", "Excel Files (*.xlsx *.xls)"
@@ -342,14 +650,12 @@ class HomePanel(QWidget):
         self.main_window._notify_panels_file_loaded(path)
         filename = os.path.basename(path)
         self.drop_label.setText(f"✅  {filename} loaded")
-        self.drop_label.setStyleSheet(
-            "color: #4caf81; font-size: 14px; background: transparent;"
-        )
+        self.drop_label.setStyleSheet("color:#4caf81;font-size:13px;background:transparent;")
         self.main_window.file_label.setText(f"📄 {filename}")
         self.main_window.status_bar.showMessage(f"Loaded: {filename}")
         self.main_window.switch_panel(1)
 
-    # ── Drag & Drop ──────────────────────────────────────────
+    # ── Drag & Drop ───────────────────────────────────────────
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -388,17 +694,23 @@ class HomePanel(QWidget):
 
     def on_file_loaded(self, path: str):
         """Called by main_window when file is loaded from sidebar."""
+        self.current_file = path
         filename = os.path.basename(path)
         self.drop_label.setText(f"✅  {filename} loaded")
-        self.drop_label.setStyleSheet(
-            "color: #4caf81; font-size: 14px; background: transparent;"
+        self.drop_label.setStyleSheet("color:#4caf81;font-size:13px;background:transparent;")
+        self.chat_file_status.setText(f"✅  Chatting about: {filename}")
+        self.chat_file_status.setStyleSheet(
+            "color:#4caf81;font-size:11px;background:#0e1e14;"
+            "border-radius:6px;padding:6px 10px;"
         )
         self._update_file_card()
+        self._clear_chat()
+        self._add_system_msg(f"📄  {filename} loaded — ask me anything!")
 
-    # ── Helper ───────────────────────────────────────────────
+    # ── Helper ────────────────────────────────────────────────
     def _section_label(self, text: str):
         label = QLabel(text)
         label.setStyleSheet(
-            "color: #444; font-size: 10px; letter-spacing: 2px; padding-top: 8px;"
+            "color:#444;font-size:10px;letter-spacing:2px;padding-top:8px;"
         )
         return label
