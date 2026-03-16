@@ -22,6 +22,86 @@ CHART_TYPES = [
 ]
 
 
+# ── Minimal chat bubble ───────────────────────────────────────────────────────
+class _ChatBubble(QFrame):
+    def __init__(self, text: str, is_user: bool, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        bubble.setMaximumWidth(320)
+
+        if is_user:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#1e2035;color:#c0c4ff;"
+                "border-radius:10px;border-bottom-right-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("You")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#7c83ff;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-left:6px;}"
+            )
+            layout.addStretch()
+            layout.addWidget(bubble)
+            layout.addWidget(av)
+        else:
+            bubble.setStyleSheet(
+                "QLabel{background-color:#162820;color:#a0d4b4;"
+                "border-radius:10px;border-bottom-left-radius:3px;"
+                "padding:8px 12px;font-size:12px;}"
+            )
+            av = QLabel("AI")
+            av.setFixedWidth(32)
+            av.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+            av.setStyleSheet(
+                "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+                "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+            )
+            layout.addWidget(av)
+            layout.addWidget(bubble)
+            layout.addStretch()
+
+
+# ── Typing indicator ─────────────────────────────────────────────────────────
+class _TypingIndicator(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        av = QLabel("AI")
+        av.setFixedWidth(32)
+        av.setAlignment(Qt.AlignCenter)
+        av.setStyleSheet(
+            "QLabel{background-color:#4caf81;color:white;border-radius:8px;"
+            "padding:3px;font-size:10px;font-weight:bold;margin-right:6px;}"
+        )
+        self.dots = QLabel("Thinking .")
+        self.dots.setStyleSheet(
+            "QLabel{background-color:#162820;color:#4caf81;"
+            "border-radius:10px;padding:8px 12px;font-size:12px;}"
+        )
+        layout.addWidget(av)
+        layout.addWidget(self.dots)
+        layout.addStretch()
+        self._state = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):  self._timer.start(400)
+    def stop(self):   self._timer.stop()
+
+    def _tick(self):
+        self.dots.setText(["Thinking .", "Thinking ..", "Thinking ..."][self._state % 3])
+        self._state += 1
+
+
 class ChartPanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -30,13 +110,30 @@ class ChartPanel(QWidget):
         self.sheet_names  = []
         self.columns      = []
         self.preview_data = None
+        self._chat_history  = []
+        self._chat_bubbles  = []
         self._build_ui()
 
     # ── Build UI ────────────────────────────────────────────
     def _build_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
+        # Left side — scrollable chart content (stretch 3)
+        root.addWidget(self._build_left_panel(), stretch=3)
+
+        # Vertical divider
+        div = QFrame()
+        div.setFrameShape(QFrame.VLine)
+        div.setStyleSheet("background-color:#2a2d3e; max-width:1px; border:none;")
+        root.addWidget(div)
+
+        # Right side — embedded chat (stretch 2)
+        root.addWidget(self._build_right_chat(), stretch=2)
+
+    # ── LEFT: scrollable chart content ───────────────────────
+    def _build_left_panel(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -84,9 +181,119 @@ class ChartPanel(QWidget):
 
         layout.addStretch()
         scroll.setWidget(inner)
-        outer.addWidget(scroll)
+        return scroll
 
-    # ── Controls Panel ───────────────────────────────────────
+    # ── RIGHT: embedded chat panel ────────────────────────────
+    def _build_right_chat(self):
+        panel = QWidget()
+        panel.setStyleSheet("background-color:#0f1117;")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 30, 24, 20)
+        layout.setSpacing(12)
+
+        # Header
+        chat_title = QLabel("💬  Chat with Data")
+        font = QFont(); font.setPointSize(14); font.setBold(True)
+        chat_title.setFont(font)
+
+        chat_sub = QLabel("Ask questions about your spreadsheet")
+        chat_sub.setStyleSheet("color:#555;font-size:11px;")
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(60)
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_chat)
+        clear_btn.setStyleSheet(
+            "QPushButton{background:transparent;color:#555;border:1px solid #2a2d3e;"
+            "border-radius:6px;padding:4px 8px;font-size:11px;}"
+            "QPushButton:hover{color:#f44336;border-color:#5a2020;background:#3d1a1a;}"
+        )
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(chat_title)
+        title_row.addStretch()
+        title_row.addWidget(clear_btn)
+
+        layout.addLayout(title_row)
+        layout.addWidget(chat_sub)
+
+        # File status bar
+        self.chat_file_status = QLabel("⚠️  Load a file to start chatting")
+        self.chat_file_status.setStyleSheet(
+            "color:#ff9800;font-size:11px;background:#1e1a0e;"
+            "border-radius:6px;padding:6px 10px;"
+        )
+        self.chat_file_status.setWordWrap(True)
+        layout.addWidget(self.chat_file_status)
+
+        # Divider
+        div = QFrame(); div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("background:#2a2d3e;max-height:1px;border:none;")
+        layout.addWidget(div)
+
+        # Chat scroll area
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_scroll.setFrameShape(QFrame.NoFrame)
+        self.chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chat_scroll.setStyleSheet(
+            "QScrollArea{background-color:#13151f;border:1px solid #2a2d3e;"
+            "border-radius:10px;}"
+        )
+
+        self.chat_container = QWidget()
+        self.chat_container.setStyleSheet("background-color:#13151f;")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setContentsMargins(12, 12, 12, 12)
+        self.chat_layout.setSpacing(6)
+        self.chat_layout.addStretch()
+
+        self.chat_scroll.setWidget(self.chat_container)
+        layout.addWidget(self.chat_scroll, stretch=1)
+
+        # Typing indicator
+        self.typing_indicator = _TypingIndicator()
+        self.typing_indicator.hide()
+        layout.addWidget(self.typing_indicator)
+
+        # Starter chips
+        self.starters_widget = self._build_starter_chips()
+        layout.addWidget(self.starters_widget)
+
+        # Input bar
+        input_frame = QFrame()
+        input_frame.setStyleSheet(
+            "QFrame{background-color:#1a1d2e;border:1px solid #2a2d3e;border-radius:10px;}"
+        )
+        input_frame.setFixedHeight(52)
+        input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(12, 8, 8, 8)
+        input_layout.setSpacing(8)
+
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("Ask about your data...")
+        self.chat_input.setStyleSheet(
+            "QLineEdit{background:transparent;border:none;color:#e0e0e0;font-size:12px;}"
+        )
+        self.chat_input.returnPressed.connect(self._send_chat)
+
+        self.send_btn = QPushButton("➤")
+        self.send_btn.setFixedSize(34, 34)
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.clicked.connect(self._send_chat)
+        self.send_btn.setStyleSheet(
+            "QPushButton{background-color:#7c83ff;color:white;border:none;"
+            "border-radius:8px;font-size:14px;font-weight:bold;}"
+            "QPushButton:hover{background-color:#6b72ff;}"
+            "QPushButton:disabled{background-color:#2a2d3e;color:#555;}"
+        )
+
+        input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(self.send_btn)
+
+        layout.addWidget(input_frame)
+
+        return panel
     def _build_controls(self):
         frame = QFrame()
         frame.setStyleSheet("QFrame{background-color:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;}")
@@ -405,6 +612,102 @@ class ChartPanel(QWidget):
         self.sheet_names = sheets
         if sheets:
             self._load_columns(sheets[0])
+        self._update_file_status()
+
+    # ── Chat Methods ──────────────────────────────────────────
+    def _clear_chat(self):
+        for bubble in self._chat_bubbles:
+            bubble.hide()
+            bubble.setParent(None)
+        self._chat_bubbles.clear()
+        self._chat_history.clear()
+        self.chat_layout.addStretch()
+
+    def _send_chat(self):
+        text = self.chat_input.text().strip()
+        if not text:
+            return
+        self.chat_input.clear()
+        self._add_chat_bubble(text, True)
+        self._show_typing()
+        from gui.workers.agent_worker import ChatWorker
+        self.chat_worker = ChatWorker(self.main_window.current_file, self._chat_history + [text])
+        self.chat_worker.result.connect(self._on_chat_result)
+        self.chat_worker.error.connect(self._on_chat_error)
+        self.chat_worker.start()
+
+    def _add_chat_bubble(self, text, is_user):
+        bubble = _ChatBubble(text, is_user)
+        self._chat_bubbles.append(bubble)
+        self.chat_layout.addWidget(bubble)
+        self.chat_scroll.verticalScrollBar().setValue(
+            self.chat_scroll.verticalScrollBar().maximum()
+        )
+
+    def _show_typing(self):
+        self.typing_indicator.show()
+        self.typing_indicator.start()
+        self.chat_scroll.verticalScrollBar().setValue(
+            self.chat_scroll.verticalScrollBar().maximum()
+        )
+
+    def _hide_typing(self):
+        self.typing_indicator.stop()
+        self.typing_indicator.hide()
+
+    def _update_file_status(self):
+        if self.main_window.current_file:
+            filename = os.path.basename(self.main_window.current_file)
+            self.chat_file_status.setText(f"✅  Chatting with: {filename}")
+            self.chat_file_status.setStyleSheet(
+                "color:#4caf81;font-size:11px;background:#0e1e14;"
+                "border-radius:6px;padding:6px 10px;"
+            )
+        else:
+            self.chat_file_status.setText("⚠️  Load a file to start chatting")
+            self.chat_file_status.setStyleSheet(
+                "color:#ff9800;font-size:11px;background:#1e1a0e;"
+                "border-radius:6px;padding:6px 10px;"
+            )
+
+    def _build_starter_chips(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        starters = [
+            "What is the total of all numeric columns?",
+            "Which row has the highest value?",
+            "Are there any missing values in this data?",
+            "What is the average of the numeric columns?",
+        ]
+
+        for q in starters:
+            btn = QPushButton(q)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, text=q: self._send_starter(text))
+            btn.setStyleSheet(
+                "QPushButton{background-color:#1a1d2e;color:#7c83ff;border:1px solid #2a2d3e;"
+                "border-radius:8px;padding:6px 10px;font-size:11px;text-align:left;}"
+                "QPushButton:hover{background-color:#252840;border-color:#7c83ff;}"
+            )
+            layout.addWidget(btn)
+
+        return widget
+
+    def _send_starter(self, text):
+        self.chat_input.setText(text)
+        self._send_chat()
+
+    def _on_chat_result(self, response):
+        self._hide_typing()
+        self._add_chat_bubble(response, False)
+        self._chat_history.append(response)
+
+    def _on_chat_error(self, error):
+        self._hide_typing()
+        self._add_chat_bubble(f"Error: {error}", False)
 
     # ── Helpers ──────────────────────────────────────────────
     def _combo_style(self):
