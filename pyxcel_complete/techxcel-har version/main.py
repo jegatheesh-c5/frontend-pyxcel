@@ -8,10 +8,10 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 
-# Make sure core and gui folders are importable
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Auto-create required folders
+
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
 
@@ -19,7 +19,7 @@ from gui.main_window import MainWindow
 
 
 def main():
-    # Enable high DPI scaling
+    
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -29,7 +29,7 @@ def main():
     app.setApplicationVersion("2.0")
     app.setOrganizationName("KiTE Development Team")
 
-    # Load global stylesheet
+    
     qss_path = os.path.join(
         os.path.dirname(__file__), "gui", "styles.qss"
     )
@@ -37,7 +37,7 @@ def main():
         with open(qss_path, "r") as f:
             app.setStyleSheet(f.read())
 
-    # Check Ollama before launching
+    
     from core.ollama_client import is_ollama_running, is_model_available
     from PySide6.QtWidgets import QMessageBox
 
